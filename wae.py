@@ -109,7 +109,8 @@ class WAE_WGAN(Net):
         # Add Save & Load methods to the class.
         super().__init__(param_scope)
 
-        self.x_sample = x_sample
+        self.x_recon = tf.cast(tf.clip_by_value(x_recon,0.,1.)*255,tf.uint8)
+        self.x_sample = tf.cast(tf.clip_by_value(x_sample,0.,1.)*255,tf.uint8)
         self.z_tilde = z_tilde
 
 class WAE_MMD(Net):
