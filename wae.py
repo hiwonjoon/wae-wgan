@@ -121,6 +121,45 @@ class WAE_MMD(Net):
 # Sample Running Script
 ########################
 
+def run(num_iter,n_critic,model,ds,log_dir,summary_period,save_period,im_summary_period,**kwargs):
+    init_op = tf.group(tf.global_variables_initializer(),
+                       tf.local_variables_initializer())
+
+    # Execute Training!
+    config = tf.ConfigProto()
+    config.gpu_options.allow_growth = True
+    sess = tf.InteractiveSession(config=config)
+
+    sess.graph.finalize()
+    summary_writer = tf.summary.FileWriter(log_dir,sess.graph)
+    #summary_writer.add_summary(hparams_summary.eval(session=sess))
+
+    # Graph Initailize
+    sess.run(init_op)
+    sess.run(ds.train_data_init_op)
+
+    from tqdm import tqdm
+    try:
+        for it in tqdm(range(num_iter),dynamic_ncols=True):
+            for _ in range(n_critic):
+                sess.run(model.update_gamma)
+
+            _, summary_str = sess.run([model.update_phi_theta,model.summary])
+
+            if( it % summary_period == 0 ):
+                #tqdm.write('[%d]'%(it))
+                summary_writer.add_summary(summary_str,it)
+            if( it % im_summary_period == 0 ):
+                summary_writer.add_summary(sess.run(model.sample_image_summary),it)
+            if( it % save_period == 0 ):
+                model.save(log_dir,it)
+    except KeyboardInterrupt:
+        model.save(log_dir)
+
+from functools import partial
+import arch
+import dataset
+
 def run_mnist(
     log_dir,
     save_period,
@@ -134,10 +173,6 @@ def run_mnist(
     z_dim = 10,
     c_fn_type='l1',
 ):
-    from functools import partial
-    from tqdm import tqdm
-    import arch
-    import dataset
 
     ds = dataset.MNIST(batch_size)
     x,_ = ds.train_data_op
@@ -184,34 +219,63 @@ def run_mnist(
                  {'lr':lr, 'lambda':10.},
                  scope)
 
-    init_op = tf.group(tf.global_variables_initializer(),
-                       tf.local_variables_initializer())
+    run(**locals())
 
-    # Execute Training!
-    config = tf.ConfigProto()
-    config.gpu_options.allow_growth = True
-    sess = tf.InteractiveSession(config=config)
 
-    sess.graph.finalize()
-    summary_writer = tf.summary.FileWriter(log_dir,sess.graph)
+def run_celeba(
+    log_dir,
+    save_period,
+    summary_period,
+    im_summary_period,
+    num_iter = int(1e6),
+    batch_size = 64,
+    n_critic = 10,
+    D_lambda = 5,
+    lr = 0.001,
+    z_dim = 64,
+    c_fn_type='l1'
+):
+    ds = dataset.CelebA(batch_size)
+    x,_ = ds.train_data_op
 
-    # Graph Initailize
-    sess.run(init_op)
-    sess.run(ds.train_data_init_op)
+    p_z = arch.Gaussian_P_Z(z_dim)
+    p_z_length = p_z.length
 
-    try:
-        for it in tqdm(range(num_iter)):
-            for _ in range(n_critic):
-                sess.run(model.update_gamma)
+    Q_arch = partial(arch.enc_with_bn_arch,
+                     input_shape=(64,64,3),
+                     output_size=p_z_length,
+                     channel_nums=[128,256,512,1024])
+    G_arch = partial(arch.dec_with_bn_arch,
+                     input_size=p_z_length,
+                     next_shape=(8,8,1024),
+                     output_channel_num=3,
+                     channel_nums=[512,256,128])
+    D_arch = partial(arch.fc_arch,
+                     input_shape=(p_z_length,), # shape when flattened.
+                     output_size=1,
+                     num_layers=4,
+                     embed_size=512,
+                     act_fn='ELU-like')
 
-            _, summary_str = sess.run([model.update_phi_theta,model.summary])
+    with tf.variable_scope('param_scope') as scope:
+        # To clearly seperate the parameters belong to layers from tf ops.
+        # Make it easier to reuse
+        pass
 
-            if( it % summary_period == 0 ):
-                #tqdm.write('[%d]'%(it))
-                summary_writer.add_summary(summary_str,it)
-            if( it % im_summary_period == 0 ):
-                summary_writer.add_summary(sess.run(model.sample_image_summary),it)
-            if( it % save_period == 0 ):
-                model.save(log_dir,it)
-    except KeyboardInterrupt:
-        model.save(log_dir)
+    if c_fn_type == 'l2':
+        c_fn = lambda x,y: tf.reduce_sum(tf.abs(x-y),axis=(1,2,3)) #use l1_distance for recon loss
+    else:
+        c_fn = lambda x,y: tf.reduce_sum((x-y)**2,axis=(1,2,3)) #use l2_distance for recon loss
+
+    model = \
+        WAE_WGAN(x,
+                 p_z,
+                 Q_arch,
+                 G_arch,
+                 D_arch,
+                 D_lambda,
+                 c_fn,
+                 {'lr':lr, 'lambda':10.},
+                 scope)
+
+    run(**locals())

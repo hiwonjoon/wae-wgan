@@ -116,22 +116,26 @@ class Linear(object) :
 
 class SymPadConv2d(object): #Resize and Convolution(upsacle by 2)
     def __init__(self,name,input_dim,output_dim,
-                 k_h=4,k_w=4,d_h=1,d_w=1,stddev=0.02) :
+                 k_h=3,k_w=3,stddev=0.02) :
+        assert k_h%2==1 and k_w%2==1, 'kernel size should be odd numbers to ensure exact size'
         with tf.variable_scope(name) :
             self.w = tf.get_variable('w', [k_h, k_w, input_dim, output_dim],
                                 initializer=tf.random_normal_initializer(stddev=stddev))
             self.b = tf.get_variable('b',[output_dim], initializer=tf.constant_initializer(0.0))
-        self.strides = [1, 1, d_h, d_w]
+
         self.padding = [ [0,0],[k_h//2,k_h//2],[k_w//2,k_w//2],[0,0] ]
 
     def __call__(self,input_var,name=None):
-        #_t = tf.image.resize_nearest_neighbor(input_var, [self.output_shape[2], self.output_shape[3]])
-        _t = tf.pad(input_var,self.padding, mode='SYMMETRIC')
+        _,h,w,c = input_var.shape.as_list()
+        _t = tf.image.resize_nearest_neighbor(input_var, [h*2, w*2])
+        _t = tf.pad(_t,self.padding, mode='SYMMETRIC')
         return tf.nn.bias_add(
                     tf.nn.conv2d(_t, self.w,
                                  data_format='NHWC', #we can't use cudnn due to resize method...
-                                 strides=self.strides, padding="VALID"),
+                                 strides=[1,1,1,1], padding="VALID"),
                     self.b,data_format='NHWC',name=name)
+    def get_variables(self):
+        return {'w':self.w,'b':self.b}
 
 class TransposedConv2d(object):
     def __init__(self,name,input_dim,out_dim,
@@ -161,6 +165,40 @@ class TransposedConv2d(object):
             self.b,data_format=self.data_format,name=name)
     def get_variables(self):
         return {'w':self.w,'b':self.b}
+
+class LayerNorm():
+    def __init__(self,name,axis,out_dim=None,epsilon=1e-7,data_format='NHWC') :
+        """
+        out_dim: Recentering by adding bias again.
+                 The previous bias can be ignored while normalization.
+                 (when you normalize over channel only)
+        """
+        assert data_format=='NCHW' or data_format=='NHWC'
+        assert len(axis) != 1 or (len(axis) == 1 and out_dim != None)
+
+        if out_dim is not None:
+            with tf.variable_scope(name) :
+                self.b = tf.get_variable('b',[out_dim], initializer=tf.constant_initializer(0.0))
+        else:
+            self.b = None
+
+        self.axis = axis
+        self.epsilon = epsilon
+        self.data_format = data_format
+        self.name = name
+
+    def __call__(self,input_var) :
+        mean, var = tf.nn.moments(input_var, self.axis, keep_dims=True)
+        ret = (input_var - mean) / tf.sqrt(var+self.epsilon)
+
+        if self.b is None :
+            return ret
+        else:
+            return tf.nn.bias_add(ret,
+                                  self.b,data_format=self.data_format)
+
+    def get_variables(self):
+        return {'b':self.b}
 
 class InstanceNorm():
     def __init__(self,name,format='NCHW',epsilon=1e-5) :

@@ -24,3 +24,10 @@ class Net(object):
     def load(self,model):
         sess = tf.get_default_session()
         self.saver.restore(sess,model)
+
+    @staticmethod
+    def _build_net(spec,_t):
+        for block in spec:
+            _t = block(_t)
+        return _t
+
