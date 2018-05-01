@@ -7,6 +7,12 @@ In order to do that, I trained Discriminator $D_\gamma$ through critic loss with
 
 I (personally) believe that this implementation is much clearer and easy to read (, and more importantly, the code almost exactly matches with the algorithm shows on the paper), so I hope it will help someone who wants to digin more! Enjoy :beer:!
 
+## (Updates: 2018-May-1)
+
+- MMD is implemented
+    - Question 1: What is inverse multiscale kernel? The formula looks a little bit different from other resources..
+    - Qeustion 2: On its original implementation, why MMD is evaluated on multiple scale (differnt C values) even though true scale is given as a prior? Doesn't it result in wrong MMD values and make Q_z diverge from P_z?
+
 ## Requirements
 
 - Python 3.x (tested with Python 3.5)
@@ -63,9 +69,9 @@ Please download the zip file and decompress it on `assets/pretrained_models/cele
 
 ## TODO
 
-- [v] Other datasets (CelebA, or CIFAR10)
+- [x] Other datasets (CelebA, or CIFAR10)
+- [x] WAE-MMD
 - [ ] WAE-GAN
-- [ ] WAE-MMD
 
 ## Acknowledgement
 

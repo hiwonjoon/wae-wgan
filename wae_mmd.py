@@ -1,17 +1,12 @@
 import tensorflow as tf
 from commons.net import Net
 
-class WAE_GAN(Net):
-    pass
-
-class WAE_WGAN(Net):
+class WAE_MMD(Net):
     def __init__(self,
                  x,
                  p_z,
                  Q_arch, #Encoder
                  G_arch, #Decoder
-                 D_arch, #Discriminator
-                 D_lambda, #Lambda for gradient_penalty for improved WGAN
                  c_fn, #l2_norm, etc.
                  backward_params,
                  param_scope):
@@ -21,8 +16,6 @@ class WAE_WGAN(Net):
                 q_net_spec,q_net_weights = Q_arch()
             with tf.variable_scope('G') as theta_scope:
                 g_net_spec,g_net_weights = G_arch()
-            with tf.variable_scope('D') as gamma_scope:
-                d_net_spec,d_net_weights = D_arch()
 
         def _build_net(spec,_t):
             for block in spec:
@@ -32,6 +25,7 @@ class WAE_WGAN(Net):
         summaries = []
         with tf.variable_scope('forward'):
             batch_size = tf.shape(x)[0]
+            d_z = p_z.length
 
             x = x
             z = p_z.sample(batch_size)
@@ -51,41 +45,46 @@ class WAE_WGAN(Net):
             # whether z~P(z) and z_hat~Q(Z|X) can be distinguished or not?
             # Trained D_gamma function will give a meaningful distance metric for D_z(Q_z,P_z)
             with tf.variable_scope('discriminate') as disc_scope:
-                e = tf.random_uniform((batch_size,1), minval=0.0,maxval=1.0)
-                z_hat = e * z + (1.0-e) * z_tilde
+                n = tf.cast(batch_size,tf.float32)
+                C_base = 2.*d_z*1
 
-                D_z_tilde = tf.squeeze(_build_net(d_net_spec,z_tilde),axis=1) # (B,1) -> (B,)
-                D_z = tf.squeeze(_build_net(d_net_spec,z),axis=1)
-                D_z_hat = tf.squeeze(_build_net(d_net_spec,z_hat),axis=1)
+                z_dot_z = tf.matmul(z,z,transpose_b=True) #[B,B} matrix where its (i,j) element is z_i \dot z_j.
+                z_tilde_dot_z_tilde = tf.matmul(z_tilde,z_tilde,transpose_b=True)
+                z_dot_z_tilde = tf.matmul(z,z_tilde,transpose_b=True)
 
-                # calculage Loss
-                critic_loss = \
-                    tf.reduce_mean(D_z_tilde - D_z, axis=0)
-                grad = tf.reshape( tf.gradients(D_z_hat,[z_hat])[0], (batch_size,-1) )
-                gradient_penalty = \
-                    tf.reduce_mean(
-                        (tf.norm(grad,axis=1)-1.0)**2,
-                        axis=0)
+                dist_z_z = tf.expand_dims(2*tf.diag_part(z_dot_z),axis=1) - 2*z_dot_z
+                dist_z_tilde_z_tilde = tf.expand_dims(2*tf.diag_part(z_tilde_dot_z_tilde),axis=1) - 2*z_tilde_dot_z_tilde
+                dist_z_z_tilde = tf.expand_dims(tf.diag_part(z_dot_z) + tf.diag_part(z_tilde_dot_z_tilde),axis=1) - 2*z_dot_z_tilde
 
-                L_D = critic_loss + D_lambda * gradient_penalty
+                L_D = 0.
+                for scale in [1.0]:
+                    C = tf.cast(C_base*scale,tf.float32)
+
+                    k_z = \
+                        C / (C + dist_z_z + 1e-8)
+                    k_z_tilde = \
+                        C / (C + dist_z_tilde_z_tilde + 1e-8)
+                    k_z_z_tilde = \
+                        C / (C + dist_z_z_tilde + 1e-8)
+
+                    loss = 1/(n*(n-1))*tf.reduce_sum(k_z)\
+                           + 1/(n*(n-1))*tf.reduce_sum(k_z_tilde)\
+                           - 2/(n*n)*tf.reduce_sum(k_z_z_tilde)
+
+                    # There are no case where z_tilde fits more than actual samples from z
+                    # It enhances numerical stability a lot!
+                    L_D += tf.maximum(loss,0.)
 
             # TF Summary to observe learning statistics...
             summaries.append(tf.summary.scalar('recon_loss',L_recon))
-            summaries.append(tf.summary.scalar('critic_loss',critic_loss))
-            summaries.append(tf.summary.scalar('gradient_penalty',gradient_penalty))
-            summaries.append(tf.summary.scalar('L_D_loss',L_D))
+            summaries.append(tf.summary.scalar('L_D',L_D))
 
         if( backward_params is not None ):
             with tf.variable_scope('backward'):
                 lr = backward_params['lr']
                 lamb = backward_params['lambda']
 
-                d_optimizer = tf.train.AdamOptimizer(lr)
                 q_g_optimizer = tf.train.AdamOptimizer(lr)
-
-                batchnorm_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS,disc_scope.name)
-                assert len(batchnorm_ops) == 0, 'D_gamma should not have batch norm, use layer norm of instance norm'
-                update_gamma = d_optimizer.minimize(L_D,var_list=tf.trainable_variables(gamma_scope.name))
 
                 batchnorm_ops = \
                     tf.get_collection(tf.GraphKeys.UPDATE_OPS,enc_scope.name)+\
@@ -94,10 +93,8 @@ class WAE_WGAN(Net):
                 print('batchnorm update ops for Q_phi(encoder):',batchnorm_ops)
                 with tf.control_dependencies(batchnorm_ops):
                     update_phi_theta = \
-                        q_g_optimizer.minimize(-1.*lamb*critic_loss + L_recon,
+                        q_g_optimizer.minimize(lamb*L_D + L_recon,
                                                var_list=tf.trainable_variables(phi_scope.name)+tf.trainable_variables(theta_scope.name))
-            self.gp = gradient_penalty
-            self.update_gamma = update_gamma
             self.update_phi_theta = update_phi_theta
 
             self.summary = tf.summary.merge(summaries)
@@ -113,11 +110,11 @@ class WAE_WGAN(Net):
         self.x_sample = tf.cast(tf.clip_by_value(x_sample,0.,1.)*255,tf.uint8)
         self.z_tilde = z_tilde
 
-########################
-# Sample Running Script
-########################
+        self.L_recon = L_recon
+        self.L_D = L_D
 
-def run(num_iter,n_critic,model,ds,log_dir,summary_period,save_period,im_summary_period,**kwargs):
+
+def run(num_iter,model,ds,log_dir,summary_period,save_period,im_summary_period,**kwargs):
     init_op = tf.group(tf.global_variables_initializer(),
                        tf.local_variables_initializer())
 
@@ -137,13 +134,10 @@ def run(num_iter,n_critic,model,ds,log_dir,summary_period,save_period,im_summary
     from tqdm import tqdm
     try:
         for it in tqdm(range(num_iter),dynamic_ncols=True):
-            for _ in range(n_critic):
-                sess.run(model.update_gamma)
-
-            _, summary_str = sess.run([model.update_phi_theta,model.summary])
+            l_recon, l_d, _, summary_str = sess.run([model.L_recon,model.L_D,model.update_phi_theta,model.summary])
 
             if( it % summary_period == 0 ):
-                #tqdm.write('[%d]'%(it))
+                tqdm.write('[%d]%f,%f'%(it,l_recon,l_d))
                 summary_writer.add_summary(summary_str,it)
             if( it % im_summary_period == 0 ):
                 summary_writer.add_summary(sess.run(model.sample_image_summary),it)
@@ -162,12 +156,11 @@ def run_mnist(
     summary_period,
     im_summary_period,
     num_iter = int(1e6),
-    batch_size = 64,
-    n_critic = 10,
-    D_lambda = 5,
-    lr = 0.001,
-    z_dim = 10,
-    c_fn_type='l1',
+    batch_size = 128,
+    lr = 0.0001,
+    lamb = 10,
+    z_dim = 8,
+    c_fn_type='l2_sum',
 ):
 
     ds = dataset.MNIST(batch_size)
@@ -198,80 +191,24 @@ def run_mnist(
         # Make it easier to reuse
         pass
 
-    if c_fn_type == 'l2':
+    if c_fn_type == 'l1':
+        c_fn = lambda x,y: tf.reduce_mean(tf.abs(x-y),axis=(1,2,3)) #use l1_distance for recon loss
+    if c_fn_type == 'l1_sum':
         c_fn = lambda x,y: tf.reduce_sum(tf.abs(x-y),axis=(1,2,3)) #use l1_distance for recon loss
-    else:
+    elif c_fn_type == 'l2':
+        c_fn = lambda x,y: tf.reduce_mean((x-y)**2,axis=(1,2,3)) #use l2_distance for recon loss
+    elif c_fn_type == 'l2_sum':
         c_fn = lambda x,y: tf.reduce_sum((x-y)**2,axis=(1,2,3)) #use l2_distance for recon loss
-
+    else:
+        assert False, 'not supported cost type'
 
     model = \
-        WAE_WGAN(x,
-                 p_z,
-                 Q_arch,
-                 G_arch,
-                 D_arch,
-                 D_lambda,
-                 c_fn,
-                 {'lr':lr, 'lambda':10.},
-                 scope)
-
-    run(**locals())
-
-
-def run_celeba(
-    log_dir,
-    save_period,
-    summary_period,
-    im_summary_period,
-    num_iter = int(1e6),
-    batch_size = 64,
-    n_critic = 10,
-    D_lambda = 5,
-    lr = 0.001,
-    z_dim = 64,
-    c_fn_type='l1'
-):
-    ds = dataset.CelebA(batch_size)
-    x,_ = ds.train_data_op
-
-    p_z = arch.Gaussian_P_Z(z_dim)
-    p_z_length = p_z.length
-
-    Q_arch = partial(arch.enc_with_bn_arch,
-                     input_shape=(64,64,3),
-                     output_size=p_z_length,
-                     channel_nums=[128,256,512,1024])
-    G_arch = partial(arch.dec_with_bn_arch,
-                     input_size=p_z_length,
-                     next_shape=(8,8,1024),
-                     output_channel_num=3,
-                     channel_nums=[512,256,128])
-    D_arch = partial(arch.fc_arch,
-                     input_shape=(p_z_length,), # shape when flattened.
-                     output_size=1,
-                     num_layers=4,
-                     embed_size=512,
-                     act_fn='ELU-like')
-
-    with tf.variable_scope('param_scope') as scope:
-        # To clearly seperate the parameters belong to layers from tf ops.
-        # Make it easier to reuse
-        pass
-
-    if c_fn_type == 'l2':
-        c_fn = lambda x,y: tf.reduce_sum(tf.abs(x-y),axis=(1,2,3)) #use l1_distance for recon loss
-    else:
-        c_fn = lambda x,y: tf.reduce_sum((x-y)**2,axis=(1,2,3)) #use l2_distance for recon loss
-
-    model = \
-        WAE_WGAN(x,
-                 p_z,
-                 Q_arch,
-                 G_arch,
-                 D_arch,
-                 D_lambda,
-                 c_fn,
-                 {'lr':lr, 'lambda':10.},
-                 scope)
+        WAE_MMD(x,
+                p_z,
+                Q_arch,
+                G_arch,
+                c_fn,
+                {'lr':lr, 'lambda':lamb},
+                scope)
 
     run(**locals())
