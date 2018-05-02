@@ -52,11 +52,25 @@ class WAE_MMD(Net):
                 z_tilde_dot_z_tilde = tf.matmul(z_tilde,z_tilde,transpose_b=True)
                 z_dot_z_tilde = tf.matmul(z,z_tilde,transpose_b=True)
 
-                dist_z_z = tf.expand_dims(2*tf.diag_part(z_dot_z),axis=1) - 2*z_dot_z
-                dist_z_tilde_z_tilde = tf.expand_dims(2*tf.diag_part(z_tilde_dot_z_tilde),axis=1) - 2*z_tilde_dot_z_tilde
-                dist_z_z_tilde = tf.expand_dims(tf.diag_part(z_dot_z) + tf.diag_part(z_tilde_dot_z_tilde),axis=1) - 2*z_dot_z_tilde
+                dist_z_z = \
+                    (tf.expand_dims(tf.diag_part(z_dot_z),axis=1)\
+                        + tf.expand_dims(tf.diag_part(z_dot_z),axis=0))\
+                    - 2*z_dot_z
+                dist_z_tilde_z_tilde = \
+                    (tf.expand_dims(tf.diag_part(z_tilde_dot_z_tilde),axis=1)\
+                        + tf.expand_dims(tf.diag_part(z_tilde_dot_z_tilde),axis=0))\
+                    - 2*z_tilde_dot_z_tilde
+                dist_z_z_tilde = \
+                    (tf.expand_dims(tf.diag_part(z_dot_z),axis=1)\
+                        + tf.expand_dims(tf.diag_part(z_tilde_dot_z_tilde),axis=0))\
+                    - 2*z_dot_z_tilde
 
                 L_D = 0.
+                #with tf.control_dependencies([
+                #    tf.assert_non_negative(dist_z_z),
+                #    tf.assert_non_negative(dist_z_tilde_z_tilde),
+                #    tf.assert_non_negative(dist_z_z_tilde)]):
+
                 for scale in [1.0]:
                     C = tf.cast(C_base*scale,tf.float32)
 
@@ -68,12 +82,10 @@ class WAE_MMD(Net):
                         C / (C + dist_z_z_tilde + 1e-8)
 
                     loss = 1/(n*(n-1))*tf.reduce_sum(k_z)\
-                           + 1/(n*(n-1))*tf.reduce_sum(k_z_tilde)\
-                           - 2/(n*n)*tf.reduce_sum(k_z_z_tilde)
+                        + 1/(n*(n-1))*tf.reduce_sum(k_z_tilde)\
+                        - 2/(n*n)*tf.reduce_sum(k_z_z_tilde)
 
-                    # There are no case where z_tilde fits more than actual samples from z
-                    # It enhances numerical stability a lot!
-                    L_D += tf.maximum(loss,0.)
+                    L_D += loss
 
             # TF Summary to observe learning statistics...
             summaries.append(tf.summary.scalar('recon_loss',L_recon))
@@ -179,12 +191,6 @@ def run_mnist(
                      output_size=784, # # of generated pixels
                      num_layers=3,
                      embed_size=256)
-    D_arch = partial(arch.fc_arch,
-                     input_shape=(p_z_length,), # shape when flattened.
-                     output_size=1,
-                     num_layers=3,
-                     embed_size=64,
-                     act_fn='ELU-like')
 
     with tf.variable_scope('param_scope') as scope:
         # To clearly seperate the parameters belong to layers from tf ops.
