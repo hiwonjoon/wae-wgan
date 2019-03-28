@@ -34,7 +34,7 @@ Check main.py file to change target dataset or to adjust hyperparmeters such as 
 
 See the `MNIST Plot.ipynb` and `CelebA Plot.ipynb` with Jupyter Notebook.
 
-A pretrained model for both MNIST is included on the repository while a model for CelebA is uploaded on [this place](https://utexas.box.com/s/pmgpb78aeha2bvh9cbl8euzth9e2u449).
+A pretrained model for both MNIST is included on the repository while a model for CelebA is uploaded on [this place](https://github.com/hiwonjoon/wae-wgan/releases).
 Please download the zip file and decompress it on `assets/pretrained_models/celeba/last*`. Or, you can easily modify a path at the first cell on the notebook.
 
 ## Results
